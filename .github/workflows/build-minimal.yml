@@ -175,12 +175,21 @@ jobs:
       run: |
         make defconfig
 
-        # libustream 三个变体互斥，都提供 /lib/libustream-ssl.so。
-        # mbedtls 带 DEFAULT_VARIANT:=1，defconfig 很可能把它拉回来，这里强制收敛到 openssl。
-        sed -i '/^CONFIG_PACKAGE_libustream-mbedtls=/d; /^CONFIG_PACKAGE_libustream-wolfssl=/d' .config
-        grep -q '^CONFIG_PACKAGE_libustream-openssl=y' .config || echo 'CONFIG_PACKAGE_libustream-openssl=y' >> .config
-        echo "--- libustream 最终选择 ---"
-        grep '^CONFIG_PACKAGE_libustream' .config || true
+        # ---- 冲突源收敛：defconfig 前后各跑一次，防止被依赖求解拉回来 ----
+        # 1) libustream 三个变体互斥，都提供 /lib/libustream-ssl.so；
+        #    mbedtls 带 DEFAULT_VARIANT:=1，必须显式清掉，统一到 openssl。
+        # 2) luci-ssl 硬依赖 libustream-mbedtls，留着必然 package/install Error 255。
+        clean_conflicts() {
+          sed -i '/^CONFIG_PACKAGE_libustream-mbedtls=/d; /^CONFIG_PACKAGE_libustream-wolfssl=/d' .config
+          sed -i '/^CONFIG_PACKAGE_luci-ssl=/d' .config
+          grep -q '^CONFIG_PACKAGE_libustream-openssl=y' .config || echo 'CONFIG_PACKAGE_libustream-openssl=y' >> .config
+        }
+        clean_conflicts
+        make defconfig
+        clean_conflicts
+
+        echo "--- libustream / luci-ssl 最终选择 ---"
+        grep -E '^CONFIG_PACKAGE_(libustream|luci-ssl)' .config || true
 
         make download -j$(( $(nproc) * 2 ))
         find dl -size -1k -exec rm -f {} \;
@@ -189,7 +198,12 @@ jobs:
       working-directory: ./openwrt
       run: |
         echo -e "$(nproc) thread compile"
-        make -j$(( $(nproc) + 1 )) || make -j1 V=s
+        make -j$(( $(nproc) + 1 )) || {
+          echo "=== 首次编译失败，输出依赖诊断 ==="
+          grep -E '^CONFIG_PACKAGE_(libustream|luci-ssl)' .config || true
+          echo "=== 单线程重试 ==="
+          make -j1 V=s
+        }
         echo "status=success" >> $GITHUB_OUTPUT
         echo "FILE_DATE=_$(date +'%Y%m%d%H%M')" >> $GITHUB_ENV
 
