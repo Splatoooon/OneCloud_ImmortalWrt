@@ -28,6 +28,16 @@ set network.lan.netmask='255.255.255.0'
 set network.lan.gateway='192.168.5.1'
 commit network
 EOF
+
+# amlogic / meson 两条线的 target.mk 都写 CPU_SUBTYPE:=neon-vfpv4，
+# 因此固件自身包架构是 arm_cortex-a5_neon-vfpv4，
+# 而 ImmortalWrt 官方 24.10-SNAPSHOT 软件源只有 arm_cortex-a5_vfpv4。
+# 这里把 vfpv4 追加进 opkg 的架构列表（优先级低于本架构），
+# 使官方源的包可被识别安装。vfpv4 指令集是 neon-vfpv4 的子集，可正常运行。
+if ! grep -q 'arm_cortex-a5_vfpv4' /etc/opkg.conf 2>/dev/null; then
+  echo 'arch arm_cortex-a5_vfpv4 5' >> /etc/opkg.conf
+fi
+
 exit 0
 UCI
 
