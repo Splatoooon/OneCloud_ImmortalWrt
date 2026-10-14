@@ -16,6 +16,7 @@ on:
 
 permissions:
   contents: write
+  actions: write      # 清理 Workflows 步骤要调 DELETE /repos/{owner}/{repo}/actions/runs/{id}，缺这项会报 Resource not accessible by integration
 
 env:
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -256,7 +257,8 @@ jobs:
         delete_tags: true
 
     - name: 清理 Workflows
+      continue-on-error: true      # 清理失败不影响固件发布结果
       uses: rmoyulong/delete-workflow-runs@main
       with:
         retain_days: 0
-        keep_minimum_runs: 1
+        keep_minimum_runs: 3      # 不要设 1，否则只剩最新一条，出问题时没法回溯日志
