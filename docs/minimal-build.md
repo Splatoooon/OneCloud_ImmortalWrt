@@ -42,5 +42,7 @@ Docker 需要这两个选项，工作流里用 sed 改回了 `=y`。
 - **只支持 amlogic6.6**。meson6.6 的包架构是 `arm_cortex-a5_neon-vfpv4`，官方源查无此目录；
   amlogic6.12 会切到 `openwrt-25.12` 分支，但该分支 32 位 armv7 的 `base/`、`luci/` 是空的。
 - **Docker 很占空间**：dockerd 60 MB + containerd 105 MB，建议把 `/opt/docker` 挂到外接存储。
-- 默认地址 **192.168.1.1**，默认无密码（首次登录会要求设置）。
+- 默认地址 **192.168.5.254** / 网关 **192.168.5.1**，默认无密码（首次登录会要求设置）。
+  （网关只影响设备自身出网；若还想给 LAN 客户端下发 DNS，见下方说明）
+- 改 IP / 网关：编辑 `Scripts/minimal-settings.sh` 里 uci-defaults 的 `network.lan` 段。
 - 想加减组件，改 `Config/minimal.config` 末尾的包列表即可，`make defconfig` 会自动解析依赖。

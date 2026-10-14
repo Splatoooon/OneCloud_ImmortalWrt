@@ -38,7 +38,8 @@ env:
   UPLOAD_WETRANSFER: false
   UPLOAD_RELEASE: true
 
-  OWRT_IP: 192.168.1.1
+  OWRT_IP: 192.168.5.254
+  OWRT_GW: 192.168.5.1
   OWRT_NAME: OneCloud
   TZ: Asia/Shanghai
 

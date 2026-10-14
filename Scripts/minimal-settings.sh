@@ -23,6 +23,10 @@ add_list system.ntp.server='ntp.ntsc.ac.cn'
 add_list system.ntp.server='ntp.aliyun.com'
 add_list system.ntp.server='cn.pool.ntp.org'
 commit system
+set network.lan.ipaddr='192.168.5.254'
+set network.lan.netmask='255.255.255.0'
+set network.lan.gateway='192.168.5.1'
+commit network
 EOF
 exit 0
 UCI
