@@ -1,0 +1,239 @@
+# ============================================================
+# 玩客云 OneCloud —— ImmortalWrt 最小化直刷包
+#
+# 与 all-quiker.yml 的区别：
+#   1. 只编 amlogic6.6 一条线（唯一与官方软件源严丝合缝的组合）
+#   2. DIY_P1 只注入 iStore + OpenClash，不再跑 Packages.sh / Handles.sh
+#   3. DIY_P2 只做时区，不再写死密码 / 不再劫持 53 端口
+#   4. files 覆盖层换成近乎空白的 files-minimal
+#   5. 编译配置换成 Config/minimal.config
+#   6. 补开 docker 需要的两个 cgroup 内核选项
+# ============================================================
+name: OneCloud 最小固件（ImmortalWrt + Docker + iStore + OpenClash）
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  REPO_URL: https://github.com/immortalwrt/immortalwrt
+  REPO_BRANCH: openwrt-24.10
+  FEEDS_CONF: feeds.conf.default
+
+  DIY_P1_SH: Scripts/minimal-setup.sh
+  DIY_P2_SH: Scripts/minimal-settings.sh
+  DIY_P3_SH: Scripts/false
+  DIY_P4_SH: Scripts/minimal-openclash-core.sh
+  DIY_P5_SH: Scripts/false
+
+  OWRT_CFG: Config/minimal.config
+  OWRT_FILES: files-minimal
+
+  UPLOAD_BIN_DIR: false
+  UPLOAD_FIRMWARE: true
+  UPLOAD_COWTRANSFER: false
+  UPLOAD_WETRANSFER: false
+  UPLOAD_RELEASE: true
+
+  OWRT_IP: 192.168.1.1
+  OWRT_NAME: OneCloud
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    name: amlogic6.6 直刷包编译
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: 检查项目
+      uses: actions/checkout@main
+
+    - name: 初始化编译环境
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo -E apt-get -qq update --fix-missing
+        sudo -E apt-get -qq full-upgrade
+        curl -fsSL -o /tmp/deps.txt \
+          https://raw.githubusercontent.com/rmoyulong/AX6-Actions_Lede/master/Ubuntu-2410.txt \
+          || cp $GITHUB_WORKSPACE/Ubuntu-2204.txt /tmp/deps.txt
+        sudo -E apt-get -qq install -y $(cat /tmp/deps.txt)
+        sudo -E apt-get -qq autoremove --purge
+        sudo -E apt-get -qq clean
+        sudo -E systemctl daemon-reload
+        sudo timedatectl set-timezone "$TZ"
+        sudo mkdir -p /workdir
+        sudo chown $USER:$GROUPS /workdir
+        df -Th
+
+    - name: 初始化变量
+      run: |
+        echo "OWRT_DATE=$(TZ=UTC-8 date +'%y.%m.%d_%H.%M.%S')" >> $GITHUB_ENV
+        echo "OWRT_SOURCE=$(echo $REPO_URL | cut -d '/' -f 5-)" >> $GITHUB_ENV
+        echo "OWRT_URL=$REPO_URL" >> $GITHUB_ENV
+        echo "OWRT_BRANCH=$REPO_BRANCH" >> $GITHUB_ENV
+        echo "OWRT_NAME=$OWRT_NAME" >> $GITHUB_ENV
+        echo "OWRT_IP=$OWRT_IP" >> $GITHUB_ENV
+        echo "OWRT_CFG=$OWRT_CFG" >> $GITHUB_ENV
+        echo "OWRT_FILES=$OWRT_FILES" >> $GITHUB_ENV
+        echo "DIY_P1_SH=$DIY_P1_SH" >> $GITHUB_ENV
+        echo "DIY_P2_SH=$DIY_P2_SH" >> $GITHUB_ENV
+        echo "DIY_P3_SH=$DIY_P3_SH" >> $GITHUB_ENV
+        echo "DIY_P4_SH=$DIY_P4_SH" >> $GITHUB_ENV
+        echo "DIY_P5_SH=$DIY_P5_SH" >> $GITHUB_ENV
+
+    - name: 克隆源仓库
+      working-directory: /workdir
+      run: |
+        df -hT $PWD
+        git clone $REPO_URL -b $REPO_BRANCH openwrt
+        ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
+
+    - name: 检查脚本
+      run: |
+        cd ./Scripts
+        dos2unix ./*.sh
+        chmod +x ./*.sh
+
+    - name: 设置 soc（外挂 amlogic target）
+      run: |
+        [ -e "$GITHUB_WORKSPACE/$FEEDS_CONF" ] && mv "$GITHUB_WORKSPACE/$FEEDS_CONF" openwrt/feeds.conf.default
+
+        mv $GITHUB_WORKSPACE/lede6.6/target/linux/amlogic openwrt/target/linux/
+        chmod -Rf 755 openwrt/target/linux/amlogic
+
+        # ---- 补开 docker 需要的 cgroup 选项（原 target 里被显式关闭）----
+        SUB=openwrt/target/linux/amlogic/meson8b/config-6.6
+        [ -f "$SUB" ] || SUB=openwrt/target/linux/amlogic/config-6.6
+        for opt in CGROUP_DEVICE CGROUP_FREEZER; do
+          sed -i "s/^# CONFIG_${opt} is not set/CONFIG_${opt}=y/" "$SUB"
+          grep -q "^CONFIG_${opt}=" "$SUB" || echo "CONFIG_${opt}=y" >> "$SUB"
+        done
+        grep -E "^CONFIG_(CGROUPS|MEMCG|CGROUP_DEVICE|CGROUP_FREEZER)=" "$SUB"
+
+    - name: 启动缓存[第二次起生效]
+      uses: rmoyulong/cachewrtbuild@main
+      with:
+        ccache: 'true'
+        prefix: ${{ github.workspace }}/openwrt
+        mixkey: amlogic6.6/tree/${{ env.OWRT_BRANCH }}?device=minimal
+
+    - name: 安装订阅源（DIY_P1）
+      run: |
+        cd openwrt
+        $GITHUB_WORKSPACE/$DIY_P1_SH
+        echo "COMMIT_HASH=$(git rev-parse HEAD)" >> $GITHUB_ENV
+
+    - name: 加载自定义配置（DIY_P2 / DIY_P3）
+      working-directory: ./openwrt
+      run: |
+        $GITHUB_WORKSPACE/$DIY_P2_SH
+        if [[ "${DIY_P3_SH}" == *"false"* ]]; then
+          echo "不需要执行 DIY_P3"
+        else
+          $GITHUB_WORKSPACE/$DIY_P3_SH
+        fi
+
+    - name: 注入 files 覆盖层与编译配置
+      working-directory: ./openwrt
+      run: |
+        # files-minimal 里没有这些目录时不要中断（bash -e）
+        if [ -d "$GITHUB_WORKSPACE/$OWRT_FILES/etc" ]; then
+          dos2unix $GITHUB_WORKSPACE/$OWRT_FILES/etc/*.sh    2>/dev/null || true
+          dos2unix $GITHUB_WORKSPACE/$OWRT_FILES/etc/rc.*    2>/dev/null || true
+          chmod -Rf 755 $GITHUB_WORKSPACE/$OWRT_FILES/etc/*.sh 2>/dev/null || true
+          chmod -Rf 755 $GITHUB_WORKSPACE/$OWRT_FILES/etc/rc.* 2>/dev/null || true
+        fi
+        [ -d "$GITHUB_WORKSPACE/$OWRT_FILES/etc/init.d" ] && \
+          chmod -Rf 755 $GITHUB_WORKSPACE/$OWRT_FILES/etc/init.d/* 2>/dev/null || true
+
+        rm -rf ./tmp* ./.config*
+        [ -e "$GITHUB_WORKSPACE/${{ env.OWRT_CFG }}" ] && mv "$GITHUB_WORKSPACE/${{ env.OWRT_CFG }}" .config
+
+        mkdir -p ./files
+        cp -rf $GITHUB_WORKSPACE/$OWRT_FILES/* ./files
+
+        # OpenClash 内核（DIY_P4）
+        if [[ "${DIY_P4_SH}" == *"false"* ]]; then
+          echo "不需要执行 DIY_P4"
+        else
+          $GITHUB_WORKSPACE/$DIY_P4_SH
+        fi
+
+        if [[ "${DIY_P5_SH}" == *"false"* ]]; then
+          echo "不需要执行 DIY_P5"
+        else
+          $GITHUB_WORKSPACE/$DIY_P5_SH
+        fi
+
+    - name: 下载编译环境
+      working-directory: ./openwrt
+      run: |
+        make defconfig
+        make download -j$(( $(nproc) * 2 ))
+        find dl -size -1k -exec rm -f {} \;
+
+    - name: 编译固件
+      working-directory: ./openwrt
+      run: |
+        echo -e "$(nproc) thread compile"
+        make -j$(( $(nproc) + 1 )) || make -j1 V=s
+        echo "status=success" >> $GITHUB_OUTPUT
+        echo "FILE_DATE=_$(date +'%Y%m%d%H%M')" >> $GITHUB_ENV
+
+    - name: 制作直刷包
+      run: |
+        $GITHUB_WORKSPACE/Scripts/convert2.sh
+
+    - name: 整理固件
+      id: organize
+      run: |
+        cd openwrt
+        mkdir outfile
+        cp -rf bin/targets/*/*/*.tar ./outfile
+        cp -rf bin/targets/*/*/*.xz ./outfile
+        cp -rf .config ./outfile/config.txt
+        rm -rf bin/targets/*/*/packages
+        cd outfile
+        if [[ $REPO_URL == *"immortalwrt"* ]]; then
+          gzip *.tar
+        fi
+        echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+        echo "::set-output name=status::success"
+        export OWRT_DATE=$(TZ=UTC-8 date +"%y.%m.%d_%H.%M.%S")
+        export OWRT_SOURCE=$(echo $REPO_URL | cut -d '/' -f 5-)
+        echo "OWRT_SOURCE=$OWRT_SOURCE" >> $GITHUB_ENV
+        echo "OWRT_DATE=$OWRT_DATE" >> $GITHUB_ENV
+
+    - name: 上传直刷固件
+      uses: ncipollo/release-action@v1
+      with:
+        allowUpdates: true
+        token: ${{ secrets.GITHUB_TOKEN }}
+        tag: OpenWrt_minimal_${{ env.OWRT_SOURCE }}_${{ env.OWRT_DATE }}
+        body: |
+          玩客云 OneCloud 最小固件（amlogic6.6 / 24.10）
+          请使用双 USB 公头线刷机！
+          ========== 基本信息 ==========
+          固件源码： ${{ env.OWRT_SOURCE }}
+          源码分支： ${{ env.OWRT_BRANCH }}
+          内核版本： 6.6
+          包含组件： Docker + iStore + OpenClash
+          默认地址： ${{ env.OWRT_IP }}
+          默认密码： 无（首次登录请自行设置）
+        artifacts: ${{ env.FIRMWARE }}/*
+
+    - name: 清理 Releases
+      uses: rmoyulong/delete-older-releases@master
+      with:
+        keep_latest: 10
+        delete_tags: true
+
+    - name: 清理 Workflows
+      uses: rmoyulong/delete-workflow-runs@main
+      with:
+        retain_days: 0
+        keep_minimum_runs: 1
