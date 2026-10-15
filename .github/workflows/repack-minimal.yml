@@ -1,0 +1,117 @@
+# ============================================================
+# 只重新打包直刷包，不重新编译（约 5~10 分钟）
+#
+# 用途：USB Burning Tool 刷到 95%~97% 报 [0x30403003] / actlen=-116 时，
+# 根因是 rootfs 分区逻辑大小太大（convert2.sh 原写死 2000M），
+# 设备端回算该分区 sha1 耗时超过工具约 150s 的读数超时。
+# 本工作流把已有 release 的 rootfs 分区缩小后重新打包，
+# 缩短设备端校验时间，绕开工具超时。换电脑/换线都无效，必须从分区大小入手。
+# ============================================================
+name: 重新打包直刷包（缩小 rootfs 分区）
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 源固件所在 Release 的 tag
+        required: true
+        default: OpenWrt_minimal_immortalwrt_26.10.14_21.05.20
+      rootfs_mb:
+        description: 缩小后的 rootfs 镜像大小(MB)，必须大于实际数据量
+        required: true
+        default: '800'
+
+permissions:
+  contents: write
+
+env:
+  TZ: Asia/Shanghai
+
+jobs:
+  repack:
+    name: rootfs 缩容重打包
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: 安装工具
+      run: |
+        sudo -E apt-get -qq update
+        sudo -E apt-get -qq install -y android-sdk-libsparse-utils e2fsprogs xz-utils
+        sudo timedatectl set-timezone "$TZ"
+        which img2simg simg2img resize2fs e2fsck
+
+    - name: 下载并解压源固件
+      run: |
+        BASE="https://github.com/${{ github.repository }}/releases/download/${{ inputs.release_tag }}"
+        curl -fL -o burn.img.xz "$BASE/immortalwrt-amlogic-meson8b-thunder-onecloud-ext4-emmc.burn.img.xz"
+        xz -d burn.img.xz
+        ls -la burn.img
+
+    - name: AmlImg 解包
+      run: |
+        ver="v0.3.2"
+        curl -fL -o ./AmlImg "https://github.com/rmoyulong/AmlImg/releases/download/$ver/AmlImg_${ver}_linux_amd64"
+        chmod +x ./AmlImg
+        ./AmlImg unpack ./burn.img burn/
+        echo "--- burn/ 内容 ---"
+        ls -la burn/
+        echo "--- commands.txt ---"
+        cat burn/commands.txt || true
+
+    - name: 缩小 rootfs 分区
+      run: |
+        set -e
+        ROOTFS_MB=${{ inputs.rootfs_mb }}
+        SRC=$(ls burn/ | grep -i '^rootfs' | head -1)
+        if [ -z "$SRC" ]; then
+          echo "::error::burn/ 里找不到 rootfs 镜像"
+          ls -la burn/
+          exit 1
+        fi
+        echo "rootfs 文件: $SRC"
+
+        # 先把 burn/ 里的引用对齐到实际文件名，避免 pack 时找不到
+        if [ -f burn/commands.txt ]; then
+          sed -i "s#^PARTITION:rootfs:sparse:.*#PARTITION:rootfs:sparse:${SRC}#" burn/commands.txt
+          cat burn/commands.txt
+        fi
+
+        ./simg2img "burn/$SRC" rootfs.raw
+        echo "--- 缩容前 ---"
+        ls -la rootfs.raw
+
+        sudo e2fsck -fy rootfs.raw || true
+        sudo resize2fs -p rootfs.raw "${ROOTFS_MB}M"
+        sudo e2fsck -fy rootfs.raw || true
+
+        ./img2simg rootfs.raw "burn/$SRC"
+        echo "--- 缩容后 ---"
+        ls -la "burn/$SRC"
+
+    - name: 重新打包
+      run: |
+        set -e
+        NAME=immortalwrt-amlogic-meson8b-thunder-onecloud-ext4-emmc
+        ./AmlImg pack "${NAME}.burn.img" burn/
+        ls -la "${NAME}.burn.img"
+        sha256sum "${NAME}.burn.img" > "${NAME}.burn.img.sha"
+        cat "${NAME}.burn.img.sha"
+        xz -9 --threads=0 --compress "${NAME}.burn.img"
+        mkdir -p out
+        mv "${NAME}.burn.img.xz" "${NAME}.burn.img.sha" out/
+        ls -la out/
+        echo "OWRT_DATE=$(TZ=UTC-8 date +'%y.%m.%d_%H.%M.%S')" >> $GITHUB_ENV
+
+    - name: 发布
+      uses: ncipollo/release-action@v1
+      with:
+        allowUpdates: true
+        token: ${{ secrets.GITHUB_TOKEN }}
+        tag: Repack_${{ inputs.rootfs_mb }}M_${{ env.OWRT_DATE }}
+        body: |
+          仅重新打包（未重新编译），rootfs 分区逻辑大小缩到 ${{ inputs.rootfs_mb }}MB。
+          用于规避 USB Burning Tool 在 95%~97% 处因设备端校验超时导致的
+          [0x30403003] / actlen=-116。
+          源固件 Release： ${{ inputs.release_tag }}
+          .sha 文件记录的是解压后 .burn.img 的 sha256，刷机前请先校验。
+        artifacts: out/*
