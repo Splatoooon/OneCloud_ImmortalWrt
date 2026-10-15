@@ -77,7 +77,7 @@ jobs:
           cat burn/commands.txt
         fi
 
-        ./simg2img "burn/$SRC" rootfs.raw
+        simg2img "burn/$SRC" rootfs.raw
         echo "--- 缩容前 ---"
         ls -la rootfs.raw
 
@@ -85,7 +85,7 @@ jobs:
         sudo resize2fs -p rootfs.raw "${ROOTFS_MB}M"
         sudo e2fsck -fy rootfs.raw || true
 
-        ./img2simg rootfs.raw "burn/$SRC"
+        img2simg rootfs.raw "burn/$SRC"
         echo "--- 缩容后 ---"
         ls -la "burn/$SRC"
 
