@@ -62,7 +62,8 @@ jobs:
       run: |
         set -e
         ROOTFS_MB=${{ inputs.rootfs_mb }}
-        SRC=$(ls burn/ | grep -i '^rootfs' | head -1)
+        # AmlImg unpack 出来的文件名带序号前缀，形如 9.rootfs.PARTITION.sparse
+        SRC=$(ls burn/ | grep -i 'rootfs' | head -1)
         if [ -z "$SRC" ]; then
           echo "::error::burn/ 里找不到 rootfs 镜像"
           ls -la burn/
