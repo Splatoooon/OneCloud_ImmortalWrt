@@ -1,0 +1,13 @@
+[Unit]
+Description=OneCloud RGB LED - Clash traffic indicator
+After=network-online.target ShellCrash.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/led-clash-traffic.sh
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
